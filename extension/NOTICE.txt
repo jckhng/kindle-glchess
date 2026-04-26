@@ -1,0 +1,60 @@
+Kindle GlChess
+===============
+
+Unofficial Kindle-friendly chess derived from GNOME Chess rules and artwork,
+with optional Stockfish play.
+
+This package includes:
+- the Kindle GlChess application binary
+- launcher scripts for KUAL
+- a bundled ARM runtime library set for GTK2/Cairo/RSVG/X11
+- SVG piece themes derived from GNOME Chess / glchess
+- GPL license texts from the source tree
+
+Project lineage
+---------------
+
+Kindle GlChess is an unofficial derivative adaptation of GNOME Chess / glchess
+for jailbroken Kindle devices. It reuses and adapts chess rules logic and
+visual assets from the upstream GNOME Games codebase.
+
+This work is also informed by GnomeGames4Kindle porting and packaging work.
+Original GNOME Chess code and artwork remain credited to the GNOME Games
+authors. Kindle porting groundwork and packaging references are credited to
+GnomeGames4Kindle and its author(s).
+
+This package is not an official GNOME project or an official GnomeGames4Kindle
+release.
+
+Licensing
+---------
+
+The upstream GNOME Chess / glchess code in this repository is GPL-licensed.
+This package should be distributed with the corresponding GPL notices and
+source availability in line with that license.
+
+Bundled license texts are included in the LICENSES/ directory.
+
+Runtime library note
+--------------------
+
+To reduce external dependencies on the Kindle, this package can bundle the
+ARM shared-library runtime needed by the app. Those libraries are third-party
+components from the build environment and remain under their own licenses.
+
+See:
+- LICENSES/RUNTIME-LIBS.txt for the bundled library list
+- LICENSES/THIRD-PARTY-NOTICE.txt for packaging notes
+
+Engine note
+-----------
+
+This package does not bundle a Stockfish engine binary from this repository
+unless one is explicitly supplied to the packager. The launcher will:
+
+1. use /mnt/us/extensions/kindle-chess/bin/armhf/stockfish if you add one
+2. otherwise fall back to the stockfish wrapper/binary from gnomegames if present
+
+So the package is immediately usable as:
+- 2-player chess
+- engine chess if a compatible Stockfish binary is available

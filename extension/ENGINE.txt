@@ -1,0 +1,15 @@
+Optional Engine Binary
+======================
+
+For fully self-contained engine play, place a compatible ARM Stockfish binary
+at:
+
+  /mnt/us/extensions/kindle-chess/bin/armhf/stockfish
+
+The launcher will prefer that binary automatically.
+
+If no local Stockfish binary is present, Kindle GlChess will fall back to:
+
+  /mnt/us/extensions/gnomegames/bin/stockfish.sh
+
+if that extension is installed.

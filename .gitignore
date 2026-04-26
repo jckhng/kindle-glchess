@@ -1,0 +1,14 @@
+# Native build outputs
+/kindle-chess
+/smoke-test
+*.o
+
+# Generated package tree
+/dist/
+
+# Local optional engine drop-in
+/bin/armhf/stockfish
+
+# Editor/OS noise
+*~
+.DS_Store
