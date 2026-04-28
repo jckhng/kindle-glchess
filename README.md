@@ -2,6 +2,8 @@
 
 A Kindle-friendly chess app derived from GNOME Chess rules and assets.
 
+![Kindle GlChess running on Kindle](screenshots/kindle-glchess.png)
+
 Kindle GlChess is an unofficial Kindle-focused derivative of GNOME Chess /
 GNOME Games. It keeps GNOME Chess/glchess move rules and artwork, while
 replacing the original GNOME desktop application shell with a small GTK2/Cairo
