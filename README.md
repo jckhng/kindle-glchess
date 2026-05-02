@@ -20,8 +20,9 @@ GnomeGames4Kindle and its author(s).
 - Cairo-rendered board with GNOME Chess simple/fancy SVG piece themes.
 - GNOME Chess/glchess-derived legal move validation, check, checkmate, castling,
   en passant, promotion, SAN-style move history, undo, save, and load.
-- One-player mode through an optional UCI engine, usually Stockfish.
-- Two-player local mode.
+- Engine modes through an optional UCI engine, usually Stockfish: Play White,
+  Play Black, and AI Demo.
+- Two-player local mode with no engine moves.
 - KUAL extension packaging with bundled ARM runtime libraries.
 
 ## Quick Install

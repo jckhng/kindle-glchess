@@ -30,7 +30,7 @@ void engine_uci_set_move_callback(EngineUci *engine, EngineUciMoveCallback callb
 void engine_uci_set_difficulty(EngineUci *engine, gint preset);
 void engine_uci_start_game(EngineUci *engine);
 void engine_uci_report_move(EngineUci *engine, const char *move);
-void engine_uci_request_move(EngineUci *engine);
+gboolean engine_uci_request_move(EngineUci *engine);
 void engine_uci_stop(EngineUci *engine);
 void engine_uci_clear(EngineUci *engine);
 

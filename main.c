@@ -30,8 +30,10 @@ typedef struct {
     GtkWidget *theme_combo;
     BoardState board;
     EngineUci engine;
-    gboolean engine_enabled;
+    gint mode;
+    gboolean engine_available;
     gboolean waiting_for_engine;
+    guint engine_request_timeout_id;
     char move_history[512][6];
     char san_history[512][32];
     int history_len;
@@ -55,7 +57,16 @@ enum {
     APP_RESULT_DRAW
 };
 
+enum {
+    APP_MODE_PLAY_WHITE = 0,
+    APP_MODE_PLAY_BLACK,
+    APP_MODE_TWO_PLAYERS,
+    APP_MODE_AI_DEMO
+};
+
 static void app_refresh_status(App *app, const char *fallback_message);
+static void app_maybe_start_engine_turn(App *app, const char *message);
+static gboolean app_game_is_over(App *app);
 
 static int app_current_view_ply(App *app) {
     return app->view_ply >= 0 ? app->view_ply : app->history_len;
@@ -63,6 +74,74 @@ static int app_current_view_ply(App *app) {
 
 static gboolean app_is_viewing_latest(App *app) {
     return app_current_view_ply(app) == app->history_len;
+}
+
+static gboolean app_mode_uses_engine(App *app) {
+    return app->mode == APP_MODE_PLAY_WHITE ||
+           app->mode == APP_MODE_PLAY_BLACK ||
+           app->mode == APP_MODE_AI_DEMO;
+}
+
+static gboolean app_is_engine_turn(App *app) {
+    gboolean white_to_move;
+
+    if (!app_mode_uses_engine(app) || !app->engine_available || !app_is_viewing_latest(app) || app_game_is_over(app)) {
+        return FALSE;
+    }
+
+    white_to_move = board_white_to_move(&app->board);
+    return app->mode == APP_MODE_AI_DEMO ||
+           (app->mode == APP_MODE_PLAY_WHITE && !white_to_move) ||
+           (app->mode == APP_MODE_PLAY_BLACK && white_to_move);
+}
+
+static gboolean app_is_human_turn(App *app) {
+    gboolean white_to_move;
+
+    if (!app_is_viewing_latest(app) || app_game_is_over(app)) {
+        return FALSE;
+    }
+    if (app->mode == APP_MODE_TWO_PLAYERS) {
+        return TRUE;
+    }
+    if (app->mode == APP_MODE_AI_DEMO) {
+        return FALSE;
+    }
+
+    white_to_move = board_white_to_move(&app->board);
+    return (app->mode == APP_MODE_PLAY_WHITE && white_to_move) ||
+           (app->mode == APP_MODE_PLAY_BLACK && !white_to_move);
+}
+
+static const char *app_side_to_move_name(App *app) {
+    return board_white_to_move(&app->board) ? "White" : "Black";
+}
+
+static gchar *app_build_turn_message(App *app) {
+    const char *side = app_side_to_move_name(app);
+
+    if (app->mode == APP_MODE_TWO_PLAYERS) {
+        return g_strdup_printf("%s to move. 2 Players mode.", side);
+    }
+    if (app->mode == APP_MODE_AI_DEMO) {
+        return g_strdup_printf("AI Demo: engine thinking for %s.", side);
+    }
+    if (!app->engine_available) {
+        return g_strdup("Engine unavailable. Switch to 2 Players or configure Stockfish.");
+    }
+    if (app->mode == APP_MODE_PLAY_WHITE) {
+        return board_white_to_move(&app->board) ? g_strdup("Your turn as White.") :
+                                                  g_strdup("Engine thinking for Black.");
+    }
+    return board_white_to_move(&app->board) ? g_strdup("Engine thinking for White.") :
+                                              g_strdup("Your turn as Black.");
+}
+
+static void app_cancel_engine_request(App *app) {
+    if (app->engine_request_timeout_id != 0) {
+        g_source_remove(app->engine_request_timeout_id);
+        app->engine_request_timeout_id = 0;
+    }
 }
 
 static const char *app_result_token(App *app) {
@@ -288,8 +367,8 @@ static void app_update_history_view(App *app) {
 
 static void app_update_controls(App *app) {
     gboolean can_undo = app->history_len > 0 && !app->waiting_for_engine;
-    gboolean can_play = !app->waiting_for_engine && !app_game_is_over(app) && app_is_viewing_latest(app);
-    gboolean engine_controls = app->engine_enabled;
+    gboolean can_play = !app->waiting_for_engine && app_is_human_turn(app);
+    gboolean engine_controls = app_mode_uses_engine(app) && app->engine_available;
     int current_ply = app_current_view_ply(app);
 
     gtk_widget_set_sensitive(app->undo_button, can_undo);
@@ -328,7 +407,7 @@ static void app_push_history(App *app, const char *move, const char *san) {
 static void app_rebuild_engine_history(App *app) {
     int i;
 
-    if (!app->engine_enabled) {
+    if (!app_mode_uses_engine(app) || !app->engine_available) {
         return;
     }
 
@@ -358,8 +437,14 @@ static void app_refresh_status(App *app, const char *fallback_message) {
 
     switch (game_state) {
         case KINDLE_CHESS_CHECK:
-            app_update_status(app, white_to_move ? "White to move and in check." : "Black to move and in check.");
+        {
+            gchar *turn_message = app_build_turn_message(app);
+            gchar *message = g_strdup_printf("%s to move and in check. %s", white_to_move ? "White" : "Black", turn_message);
+            app_update_status(app, message);
+            g_free(message);
+            g_free(turn_message);
             break;
+        }
         case KINDLE_CHESS_CHECKMATE:
             app_update_status(app, white_to_move ? "Checkmate. Black wins. Tap New Game or press u to undo." :
                                                   "Checkmate. White wins. Tap New Game or press u to undo.");
@@ -372,13 +457,58 @@ static void app_refresh_status(App *app, const char *fallback_message) {
             break;
         case KINDLE_CHESS_ONGOING:
         default:
-            app_update_status(app, fallback_message);
+            if (fallback_message != NULL && fallback_message[0] != '\0') {
+                app_update_status(app, fallback_message);
+            } else {
+                gchar *message = app_build_turn_message(app);
+                app_update_status(app, message);
+                g_free(message);
+            }
             break;
     }
     app_update_controls(app);
 }
 
+static gboolean app_engine_request_timeout_cb(gpointer user_data) {
+    App *app = (App *) user_data;
+
+    app->engine_request_timeout_id = 0;
+    if (!app_is_engine_turn(app)) {
+        app->waiting_for_engine = FALSE;
+        app_update_controls(app);
+        return FALSE;
+    }
+
+    if (!engine_uci_request_move(&app->engine)) {
+        app->engine_request_timeout_id = g_timeout_add(100, app_engine_request_timeout_cb, app);
+        return FALSE;
+    }
+
+    return FALSE;
+}
+
+static void app_maybe_start_engine_turn(App *app, const char *message) {
+    gchar *default_message;
+
+    if (!app_is_engine_turn(app)) {
+        app->waiting_for_engine = FALSE;
+        app_refresh_status(app, message);
+        return;
+    }
+
+    app->waiting_for_engine = TRUE;
+    default_message = app_build_turn_message(app);
+    app_update_status(app, default_message);
+    g_free(default_message);
+    app_update_controls(app);
+
+    if (app->engine_request_timeout_id == 0) {
+        app->engine_request_timeout_id = g_timeout_add(100, app_engine_request_timeout_cb, app);
+    }
+}
+
 static void app_reset_game(App *app) {
+    app_cancel_engine_request(app);
     board_state_reset(&app->board);
     app->history_len = 0;
     app->view_ply = -1;
@@ -388,13 +518,12 @@ static void app_reset_game(App *app) {
     memset(app->san_history, 0, sizeof(app->san_history));
     app_set_clock_duration(app, app->initial_time_ms > 0 ? app->initial_time_ms / 60000 : 0);
     app_update_history_view(app);
-    if (app->engine_enabled) {
+    if (app_mode_uses_engine(app) && app->engine_available) {
         engine_uci_start_game(&app->engine);
     }
     app->waiting_for_engine = FALSE;
     app->last_clock_tick_us = g_get_monotonic_time();
-    app_update_status(app, app->engine_enabled ? "New game started." : "New two-player game started.");
-    app_update_controls(app);
+    app_maybe_start_engine_turn(app, NULL);
     gtk_widget_queue_draw(app->drawing_area);
 }
 
@@ -421,6 +550,10 @@ static void app_set_view_ply(App *app, int ply) {
     if (ply > app->history_len) {
         ply = app->history_len;
     }
+    if (ply != app->history_len) {
+        app_cancel_engine_request(app);
+        app->waiting_for_engine = FALSE;
+    }
     app->view_ply = (ply == app->history_len) ? -1 : ply;
     app_rebuild_board_from_history(app, ply);
     app_restore_clock_snapshot(app, ply);
@@ -437,7 +570,8 @@ static void app_undo_last_turn(App *app) {
         return;
     }
 
-    removed = app->engine_enabled ? 2 : 1;
+    app_cancel_engine_request(app);
+    removed = app_mode_uses_engine(app) ? 2 : 1;
     if (removed > app->history_len) {
         removed = app->history_len;
     }
@@ -454,7 +588,7 @@ static void app_undo_last_turn(App *app) {
     app_set_view_ply(app, app->history_len);
     app_rebuild_engine_history(app);
     app_update_history_view(app);
-    app_refresh_status(app, "Undid last turn.");
+    app_maybe_start_engine_turn(app, "Undid last turn.");
 }
 
 static gboolean on_expose_event(GtkWidget *widget, GdkEventExpose *event, gpointer user_data) {
@@ -477,8 +611,8 @@ static void on_engine_move(const char *move, gpointer user_data) {
     if (board_apply_uci_move(&app->board, move, san)) {
         app_push_history(app, move, san);
         engine_uci_report_move(&app->engine, move);
-        app_refresh_status(app, "Engine moved. Your turn.");
         gtk_widget_queue_draw(app->drawing_area);
+        app_maybe_start_engine_turn(app, NULL);
     } else {
         gchar *message;
         app->board.selected_row = -1;
@@ -584,6 +718,7 @@ static gboolean app_load_pgn_file(App *app, const gchar *filename, GError **erro
     }
 
     app_reset_game(app);
+    app_cancel_engine_request(app);
     app->waiting_for_engine = FALSE;
     app->manual_result = APP_RESULT_NONE;
     app->manual_reason[0] = '\0';
@@ -616,6 +751,7 @@ static gboolean app_load_pgn_file(App *app, const gchar *filename, GError **erro
 
     app_set_view_ply(app, app->history_len);
     app_rebuild_engine_history(app);
+    app_maybe_start_engine_turn(app, NULL);
     g_strfreev(tokens);
     g_free(clean);
     g_free(content);
@@ -641,16 +777,19 @@ static gboolean on_button_press_event(GtkWidget *widget, GdkEventButton *event, 
         return TRUE;
     }
 
+    if (!app_is_human_turn(app)) {
+        app_refresh_status(app, NULL);
+        return TRUE;
+    }
+
     if (board_handle_click(&app->board, widget, event->x, event->y, app->promotion_piece, move, san)) {
         if (move[0] != '\0') {
             app_push_history(app, move, san);
             if (app_game_is_over(app)) {
                 app_refresh_status(app, "Game finished.");
-            } else if (app->engine_enabled) {
+            } else if (app_is_engine_turn(app)) {
                 engine_uci_report_move(&app->engine, move);
-                app->waiting_for_engine = TRUE;
-                app_update_status(app, "Your move sent. Engine thinking...");
-                engine_uci_request_move(&app->engine);
+                app_maybe_start_engine_turn(app, NULL);
             } else {
                 app_refresh_status(app, "Moved piece.");
             }
@@ -668,7 +807,7 @@ static void on_difficulty_changed(GtkComboBox *combo, gpointer user_data) {
     App *app = (App *) user_data;
     gint active = gtk_combo_box_get_active(combo);
 
-    if (active < 0 || !app->engine_enabled) {
+    if (active < 0 || !app_mode_uses_engine(app) || !app->engine_available) {
         return;
     }
     engine_uci_set_difficulty(&app->engine, active);
@@ -702,17 +841,18 @@ static void on_mode_changed(GtkComboBox *combo, gpointer user_data) {
     if (active < 0) {
         return;
     }
-    app->engine_enabled = (active != 0);
+    app_cancel_engine_request(app);
+    app->mode = active;
     app->waiting_for_engine = FALSE;
     app->view_ply = -1;
 
-    if (app->engine_enabled) {
-        engine_uci_start_game(&app->engine);
-        app_refresh_status(app, "Human vs Engine mode.");
+    if (app_mode_uses_engine(app) && app->engine_available) {
+        app_rebuild_engine_history(app);
     } else {
-        app_refresh_status(app, "Human vs Human mode.");
+        app_refresh_status(app, NULL);
     }
 
+    app_maybe_start_engine_turn(app, NULL);
     app_update_controls(app);
 }
 
@@ -771,6 +911,7 @@ static void on_history_latest_clicked(GtkWidget *widget, gpointer user_data) {
     App *app = (App *) user_data;
     (void) widget;
     app_set_view_ply(app, app->history_len);
+    app_maybe_start_engine_turn(app, NULL);
 }
 
 static void on_resign_clicked(GtkWidget *widget, gpointer user_data) {
@@ -830,7 +971,9 @@ static void on_load_clicked(GtkWidget *widget, gpointer user_data) {
     (void) widget;
 
     if (app_load_pgn_file(app, filename, &error)) {
-        app_update_status(app, "Loaded /mnt/us/documents/kindle-glchess.pgn");
+        if (!app->waiting_for_engine) {
+            app_update_status(app, "Loaded /mnt/us/documents/kindle-glchess.pgn");
+        }
     } else {
         gchar *message = g_strdup_printf("Load failed: %s", error != NULL ? error->message : "unknown error");
         app_update_status(app, message);
@@ -906,6 +1049,7 @@ int main(int argc, char **argv) {
     board_state_init(&app.board);
     app.promotion_piece = 'q';
     app.view_ply = -1;
+    app.mode = APP_MODE_PLAY_WHITE;
     app.initial_time_ms = 5 * 60 * 1000;
     app_set_clock_duration(&app, 5);
 
@@ -952,9 +1096,11 @@ int main(int argc, char **argv) {
     gtk_box_pack_start(GTK_BOX(vbox), settings_box_top, FALSE, FALSE, 0);
 
     app.mode_combo = gtk_combo_box_new_text();
+    gtk_combo_box_append_text(GTK_COMBO_BOX(app.mode_combo), "Play White");
+    gtk_combo_box_append_text(GTK_COMBO_BOX(app.mode_combo), "Play Black");
     gtk_combo_box_append_text(GTK_COMBO_BOX(app.mode_combo), "2 Players");
-    gtk_combo_box_append_text(GTK_COMBO_BOX(app.mode_combo), "Vs Engine");
-    gtk_combo_box_set_active(GTK_COMBO_BOX(app.mode_combo), 1);
+    gtk_combo_box_append_text(GTK_COMBO_BOX(app.mode_combo), "AI Demo");
+    gtk_combo_box_set_active(GTK_COMBO_BOX(app.mode_combo), APP_MODE_PLAY_WHITE);
     app_apply_high_contrast(app.mode_combo);
     app_create_settings_pair(settings_box_top, "Mode", app.mode_combo);
 
@@ -1073,16 +1219,19 @@ int main(int argc, char **argv) {
     engine_uci_init(&app.engine, engine_path);
     engine_uci_set_move_callback(&app.engine, on_engine_move, &app);
     if (engine_uci_start(&app.engine, &error)) {
-        app.engine_enabled = TRUE;
+        app.engine_available = TRUE;
         engine_uci_start_game(&app.engine);
     } else {
         gchar *message = g_strdup_printf("Engine disabled: %s", error != NULL ? error->message : "start failed");
+        app.mode = APP_MODE_TWO_PLAYERS;
+        gtk_combo_box_set_active(GTK_COMBO_BOX(app.mode_combo), APP_MODE_TWO_PLAYERS);
         app_update_status(&app, message);
         g_free(message);
         g_clear_error(&error);
     }
 
     app_update_history_view(&app);
+    app_maybe_start_engine_turn(&app, NULL);
     app_update_controls(&app);
     app_update_clock_labels(&app);
     app.clock_timeout_id = g_timeout_add(200, app_clock_tick, &app);
@@ -1094,6 +1243,7 @@ int main(int argc, char **argv) {
     if (app.clock_timeout_id != 0) {
         g_source_remove(app.clock_timeout_id);
     }
+    app_cancel_engine_request(&app);
     board_state_clear(&app.board);
     engine_uci_clear(&app.engine);
     return 0;

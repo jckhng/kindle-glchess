@@ -204,12 +204,12 @@ void engine_uci_report_move(EngineUci *engine, const char *move) {
     g_string_append(engine->moves, move);
 }
 
-void engine_uci_request_move(EngineUci *engine) {
+gboolean engine_uci_request_move(EngineUci *engine) {
     gchar *position;
     gchar *go_line;
 
     if (!engine->ready || engine->waiting_for_move) {
-        return;
+        return FALSE;
     }
 
     if (engine->moves->len > 0) {
@@ -224,6 +224,7 @@ void engine_uci_request_move(EngineUci *engine) {
     go_line = g_strdup_printf("go movetime %d", engine->movetime_ms);
     engine_uci_write_line(engine, go_line);
     g_free(go_line);
+    return TRUE;
 }
 
 void engine_uci_stop(EngineUci *engine) {
